@@ -19,7 +19,8 @@ przelicza cala historie bez scrapowania czegokolwiek.
 ## Konta
 
 Rejestracja przez przegladarke, haslo hashowane scryptem (werkzeug), sesja w
-cookie HttpOnly + SameSite. Pierwsze zalozone konto dostaje `is_admin=1`.
+cookie HttpOnly + SameSite + Secure, odnawiana przy kazdym logowaniu. Wylogowanie
+to POST z tokenem CSRF. Pierwsze zalozone konto dostaje `is_admin=1`.
 Kazde konto widzi wylacznie swoje profile, oznaczenia i CV — proba wejscia na
 cudzy profil konczy sie przekierowaniem, nie podgladem.
 
@@ -42,17 +43,73 @@ prosta. Otwarta rejestracja zmienia dwie rzeczy naraz:
   prywatnosci, obsluge zadan usuniecia i zgloszenia naruszen.
 
 Po stronie technicznej aplikacja ma juz: hashowanie hasel (scrypt), ochrone
-CSRF na kazdym POST, limit prob logowania (8 na 15 min, per e-mail i per IP),
-cookie HttpOnly/SameSite/Secure, izolacje danych miedzy kontami i limit
-rozmiaru requestu.
+CSRF na kazdym POST, limit prob logowania i rejestracji (8 na 15 min, per e-mail
+i per IP), cookie HttpOnly/SameSite/Secure, izolacje danych miedzy kontami,
+limit rozmiaru requestu, **szyfrowanie profili i CV w bazie** oraz reszte z
+sekcji "Bezpieczenstwo" nizej.
 
 **Nadal nie ma** resetu hasla, potwierdzania e-maila, usuwania konta z GUI ani
 polityki prywatnosci. Pelna lista i gotowa konfiguracja nginx/systemd/certbot
 jest w `DEPLOY.md` — przeczytaj przed wystawieniem na publiczny adres.
 
+## Bezpieczenstwo
+
+Co aplikacja robi sama:
+
+- **Brute force** — limit prob logowania per e-mail i per IP, drugi limit w
+  nginx (`limit_req`, patrz `DEPLOY.md`). Kod zaproszenia chroniony tym samym
+  limitem i porownywany w stalym czasie. Czas odpowiedzi nie zdradza, czy
+  konto o danym e-mailu istnieje.
+- **Prawdziwe IP klienta** — aplikacja ufa tylko ostatniemu wpisowi
+  `X-Forwarded-For` (ten dopisany przez nginx). Podrobiony naglowek nie obchodzi
+  limitu. Zalozenie: dokladnie jeden nginx przed aplikacja.
+- **Przekierowania** — `next=` / `back=` przyjmuja tylko sciezki w obrebie
+  serwisu (`//evil.com` odpada), linki do ofert tylko `http(s)://`.
+- **Naglowki** — CSP, HSTS, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`.
+- **SQL injection / XSS** — wszystkie zapytania parametryzowane, szablony
+  escapowane automatycznie.
+- **Kontener** — read-only, bez roota, `no-new-privileges`, limit pamieci.
+
+Czego pilnujesz ty:
+
+- **Port 8000 tylko na localhoscie.** W `docker-compose.yml` jest
+  `127.0.0.1:8000:8000` — nie zmieniaj na `8000:8000`. Docker omija ufw, wiec
+  aplikacja wisialaby w internecie bez HTTPS i bez limitow nginx-a.
+- **Mocny kod zaproszenia**: `openssl rand -hex 16`.
+- **Sekrety nigdy w repo** — `.env`, `.secret_key`, `.db_key`, `jobwatch.db`,
+  `raw/` i `backups/` sa w `.gitignore`. Nie dodawaj ich z `-f`.
+
+### Szyfrowanie CV i profili
+
+Kolumna `profiles.config` — tekst CV, kompetencje z CV, stanowiska, miasta,
+minimalna stawka, blacklista — jest w bazie zaszyfrowana (Fernet, AES +
+HMAC). Wyciekly plik `jobwatch.db` albo backup bez klucza jest bezuzyteczny.
+Wlasciciel widzi swoje CV normalnie — aplikacja odszyfrowuje je w locie.
+
+Klucz pochodzi z `JOBWATCH_DB_KEY`. Wygeneruj go **raz**:
+
+    python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+i wpisz do `.env` na serwerze. `docker compose` bez niego nie wystartuje.
+Lokalnie (bez zmiennej) aplikacja sama tworzy `src/.db_key`.
+
+- **Zgubiony klucz = wszystkie CV stracone.** Backup bazy nie pomoze. Trzymaj
+  kopie klucza w menedzerze hasel.
+- **Nigdy obok backupow bazy** — inaczej szyfrowanie nic nie daje.
+- Stara baza z jawnymi profilami szyfruje sie sama przy pierwszym starcie,
+  razem z wyczyszczeniem starych kopii z pliku (`VACUUM`).
+
+Zaszyfrowane NIE sa: e-maile (potrzebne do logowania), hasla (te sa
+hashowane — jeszcze lepiej), oferty (dane publiczne) i oznaczenia ofert.
+
+Czego szyfrowanie NIE chroni: przejecia dzialajacego serwera. Aplikacja musi
+miec klucz, zeby pokazac uzytkownikowi jego CV, wiec atakujacy z dostepem do
+procesu tez go ma. Przed tym chroni tylko hardening z listy wyzej. Dysk
+serwera i backupy szyfruj dodatkowo (LUKS, `age`/`gpg`).
+
 ## Profile i GUI
 
-    make setup          # flask + requests
+    make setup          # zaleznosci z requirements.txt + przykladowe profile
     make gui            # http://localhost:5000 -> zaloz konto
 
 Jedno konto moze miec kilka profili (np. dwa zawody naraz).
@@ -101,7 +158,8 @@ z CV, ktore oferta wymaga, **szare przekreslone** = wymagania, ktorych w CV nie
 ma. Widac od razu, czy oferta jest w zasiegu i co podkreslic w liscie
 motywacyjnym.
 
-Tekst CV zostaje w lokalnej bazie, nigdzie nie wychodzi.
+Tekst CV zostaje w bazie, zaszyfrowany (patrz "Szyfrowanie CV i profili"),
+i nigdzie nie wychodzi. Pliki pdf/docx nie sa nigdzie zapisywane.
 
 Czego CELOWO nie robi: procentowego "dopasowania CV do oferty" z embeddingow.
 Przy ofertach nie-IT ("stabilne zatrudnienie, mily zespol") taki wskaznik
@@ -118,7 +176,7 @@ sie nie da — te dwa pola uzupelnij recznie.
 
 ## Start
 
-    pip install requests cloudscraper flask
+    pip install -r requirements.txt
     cp config.example.json config.json     # tylko dane SMTP do maila
 
 **Sobota rano, KROK PIERWSZY:**
@@ -135,7 +193,7 @@ Od wyniku zalezy plan calego weekendu. Nie pisz nic innego, zanim to nie przejdz
 | plik | rola |
 |---|---|
 | `schema.json` | kontrakt, od niego zalezy wszystko |
-| `common.py` | baza, normalizacja, `content_hash` |
+| `common.py` | baza, normalizacja, `content_hash`, szyfrowanie profili |
 | `ingest.py` | walidacja, dedup, historia |
 | `score.py` | reguly widma — wspolne, zero I/O |
 | `profiles.py` | profile z CLI |
@@ -149,8 +207,14 @@ Od wyniku zalezy plan calego weekendu. Nie pisz nic innego, zanim to nie przejdz
 ## Baza
 
 Wszystko w `jobwatch.db` (SQLite): `offers`, `sightings` (historia dzien po dniu),
-`scores` (widmo), `profiles`, `match_results`, `feedback` (oznaczenia), `delivered`.
+`scores` (widmo), `profiles` (config zaszyfrowany), `match_results`, `feedback`
+(oznaczenia), `delivered`. W Dockerze baza lezy w wolumenie `/data`.
 `raw/*.jsonl` NIE kasuj — to zrodlo prawdy, baze odtworzysz z nich od zera.
+Ale tez nie commituj — to dane, nie kod.
+
+Obok bazy leza `.secret_key` (podpis sesji, tworzony sam) i — bez
+`JOBWATCH_DB_KEY` — `.db_key`. Usuniecie `.secret_key` wylogowuje wszystkich;
+usuniecie `.db_key` kasuje dostep do wszystkich profili.
 
 ## Czego sie spodziewac
 

@@ -12,7 +12,7 @@ import sys
 from datetime import datetime
 
 import geo
-from common import connect, normalize_text
+from common import connect, normalize_text, profile_config
 
 DEFAULT_RADIUS = 30
 # Tylko jednoznaczna praca zdalna. "Hybrydowa" albo "mozliwosc pracy zdalnej
@@ -154,7 +154,7 @@ def main():
         print("[match] brak profili. Odpal: python3 profiles.py --seed", file=sys.stderr)
         return 1
     for p in profs:
-        run_profile(conn, p["id"], p["name"], json.loads(p["config"]))
+        run_profile(conn, p["id"], p["name"], profile_config(p["config"]))
     conn.commit()
     return 0
 

@@ -151,14 +151,14 @@ def profile_queries():
     """(fraza, miasto|None, promien, tylko_zdalne) z aktywnych profili."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from common import connect
+        from common import connect, profile_config
         rows = connect().execute("SELECT config FROM profiles WHERE active=1").fetchall()
     except Exception as e:
         print(f"[olx] nie czytam profili: {e}", file=sys.stderr)
         return []
     out = []
     for r in rows:
-        cfg = json.loads(r["config"])
+        cfg = profile_config(r["config"])
         cities = [c.strip() for c in cfg.get("cities") or [] if c.strip()]
         radius = cfg.get("radius_km", 30) or 0
         for t in cfg.get("must_titles") or []:

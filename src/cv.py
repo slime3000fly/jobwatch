@@ -19,7 +19,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from common import connect, normalize_text
+from common import connect, dump_config, normalize_text
 
 STOP = set("""
 a aby albo ale ani az bardzo bez bo by byc byl byla byly bym co czy dla do
@@ -168,7 +168,7 @@ def main():
     if args.save:
         conn.execute(
             "INSERT OR REPLACE INTO profiles (name, config, active, created_at) VALUES (?,?,1,?)",
-            (args.save, json.dumps(prof, ensure_ascii=False),
+            (args.save, dump_config(prof),
              datetime.now().isoformat(timespec="seconds")))
         conn.commit()
         print(f"[cv] zapisano profil '{args.save}'", file=sys.stderr)

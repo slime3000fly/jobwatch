@@ -4,13 +4,14 @@ services:
     restart: unless-stopped
     environment:
       JOBWATCH_INVITE: "${JOBWATCH_INVITE:?ustaw kod zaproszenia w .env}"
+      # Klucz szyfrujacy profile/CV w bazie. Zgubisz go = stracisz wszystkie CV.
+      JOBWATCH_DB_KEY: "${JOBWATCH_DB_KEY:?ustaw klucz bazy w .env - patrz env.example}"
       JOBWATCH_DATA: /data
       TZ: Europe/Warsaw
     volumes:
       - jobwatch-data:/data
     ports:
-      # Tylko localhost. Na zewnatrz wystawia nginx - patrz DEPLOY.md.
-      - "127.0.0.1:8000:8000"
+      - "8000:8000"
     read_only: true
     tmpfs: [/tmp]
     security_opt: [no-new-privileges:true]

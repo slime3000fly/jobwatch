@@ -6,6 +6,7 @@ env/
 backups/
 src/jobwatch.db*
 src/.secret_key
+src/.db_key
 src/raw/
 src/quarantine/
 src/pipeline_status.json

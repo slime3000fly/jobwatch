@@ -7,6 +7,7 @@ pipeline.lock
 
 # dane i sekrety - nigdy do repo
 src/.secret_key
+src/.db_key
 src/jobwatch.db*
 src/raw/
 src/quarantine/

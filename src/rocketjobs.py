@@ -30,7 +30,7 @@ except ImportError:
     sys.exit("pip install requests")
 
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
-from common import connect, normalize_text  # noqa: E402
+from common import connect, normalize_text, profile_config  # noqa: E402
 
 BASE = "https://rocketjobs.pl"
 ROBOTS = f"{BASE}/robots.txt"
@@ -98,7 +98,7 @@ def profile_slugs():
         return []
     out = set()
     for r in rows:
-        for t in json.loads(r["config"]).get("must_titles") or []:
+        for t in profile_config(r["config"]).get("must_titles") or []:
             t = normalize_text(t).replace(" ", "-")
             if len(t) >= 3:
                 out.add(t)

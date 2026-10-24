@@ -209,7 +209,7 @@ def profile_queries():
     """(fraza, miasto, promien) z aktywnych profili. Bez miast = cala Polska."""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from common import connect
+        from common import connect, profile_config
         conn = connect()
         rows = conn.execute("SELECT config FROM profiles WHERE active=1").fetchall()
     except Exception as e:
@@ -217,7 +217,7 @@ def profile_queries():
         return []
     out = []
     for r in rows:
-        cfg = json.loads(r["config"])
+        cfg = profile_config(r["config"])
         cities = [c.strip() for c in cfg.get("cities") or [] if c.strip()] or [None]
         radius = cfg.get("radius_km", 30) or 0
         for t in cfg.get("must_titles") or []:

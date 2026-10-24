@@ -4,11 +4,10 @@
     python3 profiles.py --list
 """
 import argparse
-import json
 import sys
 from datetime import datetime
 
-from common import connect
+from common import connect, dump_config, profile_config
 
 SEED = [
     ("Siostra - ksiegowosc", {
@@ -46,12 +45,12 @@ def main():
         for name, cfg in SEED:
             conn.execute(
                 "INSERT OR IGNORE INTO profiles (name, config, active, created_at) VALUES (?,?,1,?)",
-                (name, json.dumps(cfg, ensure_ascii=False), now))
+                (name, dump_config(cfg), now))
         conn.commit()
         print(f"[profiles] dodano {len(SEED)} profili")
 
     for p in conn.execute("SELECT id, name, active FROM profiles ORDER BY id"):
-        cfg = json.loads(conn.execute(
+        cfg = profile_config(conn.execute(
             "SELECT config FROM profiles WHERE id=?", (p["id"],)).fetchone()["config"])
         print(f"  [{p['id']}] {p['name']:24s} aktywny={bool(p['active'])} "
               f"miasta={cfg.get('cities')} min={cfg.get('min_salary')}")

@@ -19,7 +19,7 @@ import time
 
 import requests
 
-from common import connect, normalize_text
+from common import connect, normalize_text, profile_config
 
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 UA = "JobWatch/1.0 (self-hosted job aggregator)"
@@ -92,7 +92,7 @@ def km(a, b):
 
 def main():
     conn = connect()
-    profs = [json.loads(r["config"])
+    profs = [profile_config(r["config"])
              for r in conn.execute("SELECT config FROM profiles WHERE active=1")]
     # Odleglosc liczymy tylko ofertom, ktore przejda filtr stanowiska (match.py) -
     # reszta i tak odpadnie, a kazda miejscowosc to sekunda czekania na Nominatim.

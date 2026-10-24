@@ -1,9 +1,11 @@
-"""Wspolne funkcje: baza, normalizacja, hashowanie. Tylko stdlib."""
+"""Wspolne funkcje: baza, normalizacja, hashowanie. Stdlib + cryptography (szyfrowanie profili)."""
 import hashlib
 import json
 import os
 import re
 import sqlite3
+import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -130,9 +132,55 @@ def connect(path=DB_PATH):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")      # kilku uzytkownikow naraz
     conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA secure_delete=ON")      # nadpisane CV nie zostaje w wolnych stronach
     conn.executescript(SCHEMA_SQL)
     _migrate(conn)
     return conn
+
+
+# --- szyfrowanie konfiguracji profili ---
+# Kolumna profiles.config trzyma CV, miasta i oczekiwana pensje. W bazie lezy
+# zaszyfrowana kluczem spoza bazy - wyciekly plik .db albo backup nic nie zdradza.
+# Klucz: JOBWATCH_DB_KEY (produkcja). Bez niego - plik .db_key obok bazy, co chroni
+# kopie samej bazy, ale nie caly katalog danych.
+# Zgubiony klucz = wszystkie profile nie do odczytania. Trzymaj jego kopie osobno.
+ENC_PREFIX = "enc1:"
+_fernet = None
+
+
+def _cipher():
+    global _fernet
+    if _fernet is None:
+        from cryptography.fernet import Fernet
+        key = os.environ.get("JOBWATCH_DB_KEY", "").strip().encode()
+        if not key:
+            kf = DATA_DIR / ".db_key"
+            try:
+                fd = os.open(kf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.write(fd, Fernet.generate_key())
+                os.close(fd)
+                print(f"[crypto] brak JOBWATCH_DB_KEY - wygenerowano {kf}", file=sys.stderr)
+            except FileExistsError:
+                pass
+            for _ in range(20):      # inny proces moze byc wlasnie w trakcie zapisu
+                key = kf.read_bytes().strip()
+                if len(key) == 44:
+                    break
+                time.sleep(0.05)
+        _fernet = Fernet(key)
+    return _fernet
+
+
+def dump_config(cfg: dict) -> str:
+    raw = json.dumps(cfg, ensure_ascii=False).encode()
+    return ENC_PREFIX + _cipher().encrypt(raw).decode()
+
+
+def profile_config(text: str) -> dict:
+    """Odczyt profiles.config - zaszyfrowanego albo jeszcze jawnego (stara baza)."""
+    if text.startswith(ENC_PREFIX):
+        text = _cipher().decrypt(text[len(ENC_PREFIX):].encode()).decode()
+    return json.loads(text)
 
 
 def _migrate(conn):
@@ -149,6 +197,17 @@ def _migrate(conn):
             "UPDATE offers SET work_mode=? WHERE source=? AND external_id=?",
             [(work_mode(dict(r)), r["source"], r["external_id"]) for r in rows.fetchall()])
         conn.commit()
+    plain = conn.execute("SELECT id, config FROM profiles WHERE config NOT LIKE ?",
+                         (ENC_PREFIX + "%",)).fetchall()
+    if plain:
+        conn.executemany(
+            "UPDATE profiles SET config=? WHERE id=? AND config=?",
+            [(dump_config(json.loads(r["config"])), r["id"], r["config"]) for r in plain])
+        conn.commit()
+        # jawne CV moze jeszcze siedziec w starych stronach pliku i w WAL-u
+        conn.execute("VACUUM")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        print(f"[crypto] zaszyfrowano {len(plain)} profili", file=sys.stderr)
 
 
 def strip_accents(s: str) -> str:

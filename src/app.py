@@ -26,7 +26,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 import cv as cvmod
 import pipeline
-from common import DATA_DIR, ROOT, connect
+from common import DATA_DIR, ROOT, connect, dump_config, profile_config
 
 app = Flask(__name__)
 # Za dokladnie jednym nginx-em: remote_addr = ostatni wpis X-Forwarded-For,
@@ -686,7 +686,7 @@ def rematch(conn, pid):
     """Przelicza dopasowanie od razu po zapisie - bez wychodzenia do terminala."""
     import match as match_mod
     row = conn.execute("SELECT name, config FROM profiles WHERE id=?", (pid,)).fetchone()
-    match_mod.run_profile(conn, pid, row["name"], json.loads(row["config"]))
+    match_mod.run_profile(conn, pid, row["name"], profile_config(row["config"]))
     conn.commit()
 
 
@@ -899,7 +899,7 @@ def view(pid):
         "wyslane": lambda r: r["status"] in ("wyslana", "rozmowa"),
     }.get(f, visible)
 
-    pcfg = json.loads(own_profile(conn, pid)["config"])
+    pcfg = profile_config(own_profile(conn, pid)["config"])
     cv_terms = set(pcfg.get("cv_terms") or [])
 
     src = request.args.get("src") or ""
@@ -950,7 +950,7 @@ def apply_view(pid, source, eid):
     ghost_why = (", ".join(x["why"] for x in json.loads(sc["ghost_reasons"]))
                  if sc and sc["ghost_reasons"] else "")
 
-    pcfg = json.loads(own_profile(conn, pid)["config"])
+    pcfg = profile_config(own_profile(conn, pid)["config"])
     cv_terms = set(pcfg.get("cv_terms") or [])
     has = miss = []
     if cv_terms:
@@ -1004,12 +1004,12 @@ def edit(pid):
         cfg = form_to_cfg(request.form)
         conn.execute("UPDATE profiles SET name=?, config=? WHERE id=?",
                      (request.form["name"].strip() or f"Profil {pid}",
-                      json.dumps(cfg, ensure_ascii=False), pid))
+                      dump_config(cfg), pid))
         conn.commit()
         rematch(conn, pid)
         return redirect(url_for("view", pid=pid))
     p = own_profile(conn, pid)
-    cfg = json.loads(p["config"])
+    cfg = profile_config(p["config"])
     body = render_template_string(EDIT, title="Ustawienia profilu", name=p["name"], pid=pid,
                                   f=cfg_to_form(cfg), n_terms=len(cfg.get("cv_terms") or []),
                                   raw=json.dumps(cfg, ensure_ascii=False, indent=2))
@@ -1024,7 +1024,7 @@ def new_profile():
         conn.execute(
             "INSERT INTO profiles (user_id, name, config, active, created_at) VALUES (?,?,?,1,?)",
             (uid(), request.form["name"].strip() or "Nowy profil",
-             json.dumps(cfg, ensure_ascii=False),
+             dump_config(cfg),
              datetime.now().isoformat(timespec="seconds")))
         conn.commit()
         pid = conn.execute("SELECT last_insert_rowid() i").fetchone()["i"]

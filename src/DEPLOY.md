@@ -48,11 +48,14 @@ niego zapisywalne, dla reszty swiata nie: `chmod 600 .secret_key`.
     server {
         server_name praca.twojadomena.pl;
 
+        # Na poziomie server - dziedzicza je WSZYSTKIE location ponizej.
+        # Wewnatrz `location /` bloki /login i /register by ich nie dostaly.
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
         location / {
             proxy_pass http://127.0.0.1:8000;
-            proxy_set_header Host $host;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
         }
 
         # drugi limit, niezalezny od tego w aplikacji
@@ -62,9 +65,7 @@ niego zapisywalne, dla reszty swiata nie: `chmod 600 .secret_key`.
                            proxy_pass http://127.0.0.1:8000; }
 
         client_max_body_size 2m;
-        add_header X-Content-Type-Options nosniff;
-        add_header X-Frame-Options DENY;
-        add_header Referrer-Policy same-origin;
+        # Naglowki bezpieczenstwa (CSP, HSTS, X-Frame-Options...) ustawia aplikacja.
     }
 
 W `/etc/nginx/nginx.conf`, w bloku `http`:
@@ -75,7 +76,11 @@ Certyfikat:
 
     certbot --nginx -d praca.twojadomena.pl
 
-`X-Forwarded-For` jest wazny — bez niego limiter w aplikacji widzi wszystkich
+Aplikacja ufa tylko OSTATNIEMU wpisowi `X-Forwarded-For` (ProxyFix, x_for=1),
+czyli temu dopisanemu przez nginx - klient nie podrobi sobie IP. Zakladamy
+dokladnie jeden proxy przed aplikacja; port 8000 nie moze byc wystawiony
+na zewnatrz (w docker-compose jest `127.0.0.1:8000:8000` - nie zmieniaj tego,
+Docker omija ufw). `X-Forwarded-For` jest wazny — bez niego limiter w aplikacji widzi wszystkich
 jako jedno IP (adres nginx-a) i zablokuje wszystkich naraz.
 
 ## 4. Backup

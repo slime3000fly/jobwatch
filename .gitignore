@@ -3,3 +3,13 @@ env
 __pycache__
 pipeline_status.json
 pipeline.lock
+.secret_key
+
+# dane i sekrety - nigdy do repo
+src/.secret_key
+src/jobwatch.db*
+src/raw/
+src/quarantine/
+backups/
+probe_sample.json
+*.db

@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from flask import (Flask, jsonify, redirect, render_template_string, request,
                    session, url_for)
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import cv as cvmod
@@ -28,6 +29,9 @@ import pipeline
 from common import DATA_DIR, ROOT, connect
 
 app = Flask(__name__)
+# Za dokladnie jednym nginx-em: remote_addr = ostatni wpis X-Forwarded-For,
+# czyli ten dopisany przez nginx. Wczesniejsze wpisy podaje klient - nie ufamy im.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 # Sekret sesji trwaly miedzy restartami - inaczej wszyscy sie wylogowuja.
 # O_EXCL: przy pierwszym starcie kilka workerow gunicorna moze tu wejsc naraz -
@@ -60,6 +64,44 @@ INVITE_CODE = os.environ.get("JOBWATCH_INVITE", "zmien-mnie")
 
 PUBLIC = {"login", "register", "static"}
 
+# Porownanie hasla takze dla nieistniejacego konta - inaczej czas odpowiedzi
+# zdradza, ktore e-maile sa zarejestrowane.
+DUMMY_HASH = generate_password_hash(secrets.token_urlsafe(16))
+
+
+def safe_next(target, default="/"):
+    """Tylko sciezki w obrebie serwisu. '//evil.com' i '/\\evil.com' to juz inna domena."""
+    if (not target or not target.startswith("/")
+            or target[1:2] in ("/", "\\") or any(c in target for c in "\r\n")):
+        return default
+    return target
+
+
+def safe_url(u):
+    """Linki do ofert pochodza ze scrapowanych stron - tylko http(s), zadnego javascript:."""
+    u = (u or "").strip()
+    return u if u.lower().startswith(("https://", "http://")) else "#"
+
+
+app.jinja_env.filters["safe_url"] = safe_url
+
+
+@app.after_request
+def security_headers(resp):
+    h = resp.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "same-origin")
+    # Skrypty i style sa inline, stad 'unsafe-inline'; reszta zablokowana.
+    h.setdefault("Content-Security-Policy",
+                 "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+                 "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+                 "object-src 'none'; base-uri 'none'; form-action 'self'; "
+                 "frame-ancestors 'none'")
+    if app.config["SESSION_COOKIE_SECURE"]:
+        h.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return resp
+
 # --- CSRF: token w sesji, sprawdzany przy kazdym POST ---
 
 
@@ -91,8 +133,14 @@ WINDOW = 15 * 60       # sekund
 LOCKOUT_MSG = ("Za dużo prób logowania. Odczekaj kwadrans i spróbuj ponownie.")
 
 
+MAX_KEYS = 20_000      # zeby zalew losowymi e-mailami nie zjadl pamieci
+
+
 def too_many(*keys) -> bool:
     now = time.time()
+    if len(ATTEMPTS) > MAX_KEYS:
+        for k in [k for k, ts in ATTEMPTS.items() if not ts or now - ts[-1] >= WINDOW]:
+            del ATTEMPTS[k]
     for k in keys:
         ATTEMPTS[k] = [t for t in ATTEMPTS[k] if now - t < WINDOW]
         if len(ATTEMPTS[k]) >= MAX_TRIES:
@@ -107,9 +155,8 @@ def note_attempt(*keys):
 
 
 def client_ip() -> str:
-    """Za nginx-em prawdziwe IP siedzi w X-Forwarded-For."""
-    fwd = request.headers.get("X-Forwarded-For", "")
-    return fwd.split(",")[0].strip() if fwd else (request.remote_addr or "?")
+    """Prawdziwe IP ustawia ProxyFix z naglowka dopisanego przez nginx."""
+    return request.remote_addr or "?"
 
 
 def uid():
@@ -346,7 +393,9 @@ BASE = """<!doctype html><html lang="pl"><meta charset="utf-8">
   <div class="menu">
     {% if pid %}<a class="icon-btn" href="{{ url_for('edit', pid=pid) }}"
       title="Ustawienia profilu">Ustawienia</a>{% endif %}
-    <a class="icon-btn" href="{{ url_for('logout') }}" title="Wyloguj">Wyloguj</a>
+    <form method="post" action="{{ url_for('logout') }}" style="margin:0">
+      <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+      <button class="icon-btn" title="Wyloguj">Wyloguj</button></form>
   </div>
 </div></header>
 <main class="wrap">
@@ -434,7 +483,7 @@ LIST = """
       {% elif r.ghost >= 25 %}<span class="tag warn">Ryzyko widma {{ r.ghost }}%</span>{% endif %}
       {% if r.status != 'nowa' %}<span class="tag st">{{ labels[r.status] }}</span>{% endif %}
     </div>
-    <h3><a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.title }}</a></h3>
+    <h3><a href="{{ r.url|safe_url }}" target="_blank" rel="noopener">{{ r.title }}</a></h3>
     <div class="company">{{ r.company or 'Firma nieznana' }}</div>
     <div class="facts">
       {% if r.city %}<span>📍 {{ r.city }}</span>{% endif %}
@@ -559,7 +608,7 @@ APPLY = """<div class="narrow">
 <h1 class="page">{{ o.title }}</h1>
 <p class="sub">{{ o.company or 'Firma nieznana' }}{% if o.city %} · {{ o.city }}{% endif %}
   {% if o.work_mode %} · praca {{ o.work_mode }}{% endif %}
-  · <a href="{{ o.url }}" target="_blank" rel="noopener">zobacz ogłoszenie ↗</a></p>
+  · <a href="{{ o.url|safe_url }}" target="_blank" rel="noopener">zobacz ogłoszenie ↗</a></p>
 
 {% if ghost >= 50 %}
 <div class="alert bad"><b>⚠ Wysokie ryzyko ogłoszenia-widma ({{ ghost }}%)</b>
@@ -598,7 +647,7 @@ APPLY = """<div class="narrow">
     <input type="hidden" name="external_id" value="{{ o.external_id }}">
     <input type="hidden" name="status" value="wyslana">
     <input type="hidden" name="back" value="{{ url_for('view', pid=pid) }}">
-    <button class="btn primary lg" onclick="window.open({{ o.url|tojson|forceescape }},'_blank')">
+    <button class="btn primary lg" onclick="window.open({{ o.url|safe_url|tojson|forceescape }},'_blank')">
       Otwórz ogłoszenie i oznacz jako wysłane</button>
   </form>
 </section>
@@ -735,15 +784,17 @@ def login():
                 email=email, alt=""), 429
         conn = connect()
         u = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-        if u and check_password_hash(u["pass_hash"], request.form["password"]):
+        ok = check_password_hash(u["pass_hash"] if u else DUMMY_HASH,
+                                 request.form["password"])
+        if u and ok:
+            session.clear()                              # nowa sesja po zalogowaniu
             session.permanent = True
             session["uid"] = u["id"]
             conn.execute("UPDATE users SET last_login=? WHERE id=?",
                          (datetime.now().isoformat(timespec="seconds"), u["id"]))
             conn.commit()
             session["csrf"] = secrets.token_urlsafe(32)   # nowy token po zalogowaniu
-            nxt = request.args.get("next") or url_for("index")
-            return redirect(nxt if nxt.startswith("/") else url_for("index"))
+            return redirect(safe_next(request.args.get("next"), url_for("index")))
         note_attempt(f"e:{email}", f"i:{ip}")
         err = "Zły e-mail lub hasło."
     return render_template_string(
@@ -764,7 +815,8 @@ def register():
                 AUTH, title="Załóż konto", err=LOCKOUT_MSG,
                 invite=bool(INVITE_CODE), email=email, alt=""), 429
         note_attempt(f"r:{ip}")
-        if INVITE_CODE and request.form.get("invite", "") != INVITE_CODE:
+        if INVITE_CODE and not secrets.compare_digest(
+                request.form.get("invite", "").encode(), INVITE_CODE.encode()):
             err = "Zły kod zaproszenia."
         elif len(pwd) < 8:
             err = "Hasło musi mieć co najmniej 8 znaków."
@@ -779,6 +831,7 @@ def register():
                     "INSERT INTO users (email, pass_hash, is_admin, created_at) VALUES (?,?,?,?)",
                     (email, generate_password_hash(pwd), 1 if first else 0, now))
                 conn.commit()
+                session.clear()
                 session.permanent = True
                 session["uid"] = conn.execute(
                     "SELECT id FROM users WHERE email=?", (email,)).fetchone()["id"]
@@ -790,7 +843,7 @@ def register():
         alt=f'Masz już konto? <a href="{url_for("login")}">Zaloguj się</a>')
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
     session.clear()
     return redirect(url_for("login"))
@@ -927,7 +980,8 @@ def mark():
         (request.form["pid"], request.form["source"], request.form["external_id"],
          request.form["status"], datetime.now().isoformat(timespec="seconds")))
     conn.commit()
-    return redirect(request.form.get("back") or url_for("view", pid=request.form["pid"]))
+    return redirect(safe_next(request.form.get("back"),
+                              url_for("view", pid=request.form["pid"])))
 
 
 @app.route("/refresh", methods=["POST"])
@@ -938,8 +992,7 @@ def refresh():
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
         time.sleep(0.5)      # zeby plik blokady zdazyl powstac przed przekierowaniem
-    back = request.form.get("back") or "/"
-    return redirect(back if back.startswith("/") else "/")
+    return redirect(safe_next(request.form.get("back")))
 
 
 @app.route("/p/<int:pid>/edit", methods=["GET", "POST"])

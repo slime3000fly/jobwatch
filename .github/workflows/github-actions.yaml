@@ -33,7 +33,11 @@ jobs:
 
       - name: Skrypty powloki
         run: |
-          for f in docker/*.sh; do sh -n "$f"; done
+          found=0
+          for f in $(find . -name '*.sh' -not -path './.git/*'); do
+            sh -n "$f" && found=$((found+1))
+          done
+          echo "sprawdzono $found skryptow"
 
       - name: Import modulow i szybki test pipeline'u
         run: |

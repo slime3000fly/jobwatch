@@ -1,7 +1,7 @@
 flask==3.0.3
 gunicorn==22.0.0
 requests==2.32.3
-cryptography==44.0.0
+cryptography==50.0.0
 cloudscraper==1.2.71
 # opcjonalne - tylko jesli CV jest w pdf/docx
 pdfminer.six==20240706

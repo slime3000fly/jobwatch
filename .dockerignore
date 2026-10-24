@@ -1,0 +1,13 @@
+# Bez tego COPY . . wrzuca do obrazu venv, baze, sekret sesji i .env.
+env/
+.env
+.git
+**/__pycache__
+backups/
+src/jobwatch.db*
+src/.secret_key
+src/raw/
+src/quarantine/
+src/pipeline_status.json
+src/pipeline.lock
+probe_sample.json

@@ -1,0 +1,5 @@
+.env
+env
+__pycache__
+pipeline_status.json
+pipeline.lock

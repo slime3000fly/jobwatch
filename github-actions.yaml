@@ -1,0 +1,162 @@
+name: Build image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      playwright:
+        description: "Zbuduj tez wariant z Playwrightem (~1,5 GB)"
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+jobs:
+  # Tani etap wstepny: lapie literowki, zanim zaplacimy za budowanie obrazu.
+  sanity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Skladnia wszystkich plikow
+        run: python -m compileall -q .
+
+      - name: Skrypty powloki
+        run: |
+          for f in docker/*.sh; do sh -n "$f"; done
+
+      - name: Import modulow i szybki test pipeline'u
+        run: |
+          pip install -q -r requirements.txt
+          export JOBWATCH_DATA="$RUNNER_TEMP/data"
+          python - <<'PY'
+          import json, os, subprocess, datetime
+          from common import connect, RAW_DIR
+          d = datetime.date.today().isoformat()
+          rec = {"schema_version": 1, "source": "test", "external_id": "1",
+                 "url": "https://example.com/1", "title": "Ksiegowa",
+                 "company": "ABC", "city": "Krakow", "salary_min": 8000,
+                 "salary_max": 9000, "currency": "PLN", "contract": "UoP",
+                 "description": "Pelna ksiegowosc, bilans.",
+                 "fetched_at": d + "T08:00:00+02:00", "raw": {}}
+          (RAW_DIR / f"{d}_test.jsonl").write_text(
+              json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8")
+          for step in (["ingest.py", "--date", d], ["score.py"]):
+              subprocess.run(["python", *step], check=True)
+          n = connect().execute("SELECT COUNT(*) c FROM offers").fetchone()["c"]
+          assert n == 1, f"oczekiwano 1 oferty, jest {n}"
+          print("pipeline dziala")
+          PY
+
+      - name: Aplikacja wstaje i wymaga logowania
+        run: |
+          export JOBWATCH_DATA="$RUNNER_TEMP/data" JOBWATCH_HTTPS=0
+          python - <<'PY'
+          from app import app
+          c = app.test_client()
+          r = c.get("/")
+          assert r.status_code == 302 and "/login" in r.headers["Location"], r.status_code
+          assert c.post("/mark", data={"pid": "1"}).status_code in (302, 400)
+          print("auth i CSRF odpowiadaja poprawnie")
+          PY
+
+  build:
+    needs: sanity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Na pull requestach tylko budujemy, nie publikujemy.
+      - name: Logowanie do GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Budowanie i publikacja
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: base
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      # Sprawdzamy, ze obraz naprawde startuje - nie tylko, ze sie zbudowal.
+      - name: Smoke test obrazu
+        run: |
+          docker build --target base -t jobwatch:test .
+          docker run -d --name jw \
+            -e JOBWATCH_INVITE=ci-test -e JOBWATCH_HTTPS=0 \
+            -e JOBWATCH_DATA=/data -p 8000:8000 jobwatch:test
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/login >/dev/null 2>&1; then
+              echo "aplikacja odpowiada po ${i}s"; OK=1; break
+            fi
+            sleep 1
+          done
+          if [ "${OK:-0}" != "1" ]; then
+            echo "::error::kontener nie odpowiedzial w 30s"; docker logs jw; exit 1
+          fi
+          docker exec jw id | grep -q 'uid=10001' \
+            && echo "dziala jako nie-root" \
+            || { echo "::error::kontener dziala jako root"; exit 1; }
+          docker rm -f jw
+
+  # Ciezki wariant tylko na zadanie - obraz rosnie z ~200 MB do ~1,5 GB.
+  build-playwright:
+    needs: sanity
+    if: github.event_name == 'workflow_dispatch' && inputs.playwright
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: playwright
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE }}:playwright
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false

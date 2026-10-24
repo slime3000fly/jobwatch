@@ -1,0 +1,61 @@
+services:
+  web:
+    build: { context: ., target: base }
+    restart: unless-stopped
+    environment:
+      JOBWATCH_INVITE: "${JOBWATCH_INVITE:?ustaw kod zaproszenia w .env}"
+      JOBWATCH_HTTPS: "${JOBWATCH_HTTPS:-1}"
+      JOBWATCH_DATA: /data
+      TZ: Europe/Warsaw
+    volumes:
+      - jobwatch-data:/data
+    ports:
+      # Tylko localhost. Na zewnatrz wystawia nginx - patrz DEPLOY.md.
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        # przycisk "Pobierz oferty" odpala caly pipeline w tym kontenerze
+        limits: { memory: 768M }
+
+  scraper:
+    # zmien na target: playwright jesli probe_pracuj.py tego wymaga
+    build: { context: ., target: base }
+    restart: unless-stopped
+    command: /app/run-daily.sh
+    # healthcheck z obrazu sprawdza serwer WWW, ktorego w tym kontenerze nie ma
+    healthcheck: { disable: true }
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      JOBWATCH_DATA: /data
+      JOBWATCH_RUN_HOUR: "${JOBWATCH_RUN_HOUR:-7}"
+      JOBWATCH_LIMIT: "${JOBWATCH_LIMIT:-300}"
+      TZ: Europe/Warsaw
+    volumes:
+      - jobwatch-data:/data
+    security_opt: [no-new-privileges:true]
+    deploy:
+      resources:
+        # Playwright potrzebuje wiecej - podnies do 1500M przy tym wariancie
+        limits: { memory: 768M }
+
+  backup:
+    image: alpine:3.20
+    restart: unless-stopped
+    volumes:
+      - jobwatch-data:/data:ro
+      - ./backups:/backups
+    command: >
+      sh -c "apk add --no-cache sqlite >/dev/null &&
+             while true; do
+               sqlite3 /data/jobwatch.db \".backup /backups/jw-$$(date +%F).db\" &&
+               echo \"[backup] $$(date +%F) ok\";
+               find /backups -name 'jw-*.db' -mtime +30 -delete;
+               sleep 86400;
+             done"
+
+volumes:
+  jobwatch-data:
